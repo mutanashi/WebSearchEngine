@@ -27,6 +27,7 @@
 
 - [複習小考 2026-10-04] 第1課 5 題：②④ 對；① 錯（以為 metric_url 有 batch_id）；③ 混淆 coverage 與 daily/weekly/monthly；⑤ 不懂 tags=[] 的意義 → 下次先抽問 ①③⑤。
 - [問] shard 是什麼 → 見附錄 D。
+- [問] SerpApi URL 的類別能不能拿來 filter / 調整 crawl 比例 → 附錄 B.3。
 
 ## 待處理問題
 
@@ -59,7 +60,7 @@
     - 程式位置：`Metric/RawDataReader/DatabaseRawDataReader.py:_fetch_trending_now`（重試失敗回傳 `[]`）→ `_save_to_database` 照樣建 batch；`Metric/Query/QueryStrategy.py:getQuery`（失敗回傳 `[]`）。
     - 管線 / 影響指標：管線 B（coverage）→ metric_headset_* / metric_randomset_*。
     - 現象：10 國全失敗 → 空 batch（batch 10~17）→ 該輪沒有 coverage，快取期間不重抓；單一 keyword 失敗 → 有 tag 但 0 個 URL（dump：1,416 個，batch 1: 364、batch 5: 23、batch 9: 1,029）→ golden set 變小。
-    - 待確認：10 月起是否仍會發生。
+    - 待確認：9 月起是否仍會發生。
     - 建議修正：rawData 為空時不建 batch；`getQuery` 失敗時丟例外或跳過該 keyword；用快取前檢查 `meta_total_queries > 0`。
     - 相關：重跑時清掉舊 URL → 第 5 項。
   - **4-B｜crawlerdb shard 查詢失敗 → 該 shard 當成 0（詳見第 6 課 6.4）**
@@ -453,7 +454,7 @@ dump 實際資料：
 
 **影響範圍（學生補充：batch 週期調整過；只需要 2026-10 起的數據）**
 - 對歷史資料：空 batch 不會產生錯誤數字，只會讓 coverage **斷層**（headset/randomset 從 06-05/06-12 直接跳到 09-17）。crawler_stat 不受影響（不用 batch）。→ 10 月起的分析可以忽略 batch 10~17。
-- 對 10 月起的資料：程式的問題仍在。只要某次 SerpApi 失敗，就會建空 batch → `get_latest_batch_id` 選到它 → `CrawlerAllMetricMeasure` 印 "No URLs found" 直接結束 → 那一輪**沒有 coverage**，而且快取期間內不會自動重抓。
+- 對 9 月起的資料：程式的問題仍在。只要某次 SerpApi 失敗，就會建空 batch → `get_latest_batch_id` 選到它 → `CrawlerAllMetricMeasure` 印 "No URLs found" 直接結束 → 那一輪**沒有 coverage**，而且快取期間內不會自動重抓。
 - dump 現況：coverage 最後一筆是 2026-09-17（batch 18）；**10 月還沒有任何 coverage 資料**，crawler_stat 只有 10-01 一筆。
 
 ### 2.4 其他細節
@@ -980,7 +981,7 @@ SET discovered = 6327505701, crawled = 1538967152, indexed = 0, fetch_ok = 35264
 | 23:00 | 最後一次 UPDATE | **最終值**（少最後 1 小時 → 第 7 課 7.4(a) 的 4%） |
 
 **dump 驗證**：最新一列 `2026-10-01` 的 `fetch_ok = 3,526,448`，前幾天都是 2,000~2,800 萬 → 只有正常的約 13%。不是 crawler 變慢，而是 dump 在 10-01 凌晨（約 03:00）拿的，這一列**還沒寫完**。
-→ 讀 dashboard 時，**最右邊（今天）那個點的 flow 值一定偏低**，不能拿來和前幾天比。（你只看 10 月起的資料，所以 10-01 這一列正好落在範圍內。）
+→ 讀 dashboard 時，**最右邊（今天）那個點的 flow 值一定偏低**，不能拿來和前幾天比。（你以 9 月起的資料為主，10-01 這一列正好落在範圍內。）
 
 ### 8.4 坑：`set_=row_data` 只更新「有給的 key」
 
@@ -1166,6 +1167,46 @@ WHERE event_date BETWEEN CURRENT_DATE - 29 AND CURRENT_DATE;
      OR mu.url LIKE '%g.co/kgs%'
   GROUP BY mq.batch_id ORDER BY 1;
   ```
+
+---
+
+### B.3 各類別的 coverage，以及能不能 filter / 調整比例（學生問，2026-10-04）
+
+做法：沿用 B.1 的網域分類規則（啟發式），以 (batch, url) 去重，統計 `metric_url.is_*`。
+注意：`is_*` 是每個 batch **最後一次量測**的狀態；batch 18（09-17）那次沒有傳 `--select_db_url`，所以 indexed 全是 0，表中不列。
+
+**batch 18（09-17，最新，7,671 個 distinct URL）**
+
+| 類別 | 佔 golden | discovered | crawled | 解讀 |
+|---|---|---|---|---|
+| 其他 | 39.7% | 53% | 31% | |
+| 體育 | 16.5% | 59% | 45% | 表現最好的一類 |
+| **社群/論壇** | 13.6% | **16%** | **1.6%** | IG/FB/X 擋 crawler 或要登入，幾乎抓不到 |
+| **百科/參考** | 10.6% | **88%** | 41% | **找到了卻沒抓**，差距 47 pp |
+| 影音 | 8.3% | 33% | 9% | 幾乎都是 youtube |
+| 新聞/媒體 | 7.3% | 50% | 26% | |
+| 政府/教育 | 3.2% | 73% | 38% | |
+| 電商 | 0.7% | 23% | 9% | |
+
+全部 batch 的趨勢相同（社群類 crawled 只有 0.6%）。
+
+**能不能 filter / 調整比例？要分兩個地方看：**
+
+1. **golden set（量測端）：只能清掉「不是網頁」的東西，不能刪「難抓」的類別。**
+   - 可以清：`/goto` 假網址、Google 自家頁面（`google.com/maps`、`g.co/kgs`）→ 這是修正資料錯誤。
+   - 不應刪：社群、影音。它們是使用者真的會點的結果；拿掉後 coverage 會變高，但 crawler 沒有變好（= 把考卷上的難題拿掉）。
+   - 較好的做法是**分開報**：整體 coverage（照舊）＋「可達 coverage」（排除被 robots / 403 擋住的部分）。hedger9487 的 report 估計 crawl 的實際天花板約 66%。
+
+2. **crawler（排程端）：可以調整。** 依據不是「golden 裡各類佔多少」，而是「每花一次 crawl 能多拿到幾個 golden」：
+   - 百科（88% / 41%）：瓶頸在排程，不在發現 → 多給 crawl 預算最划算。
+   - 體育、其他、政府：還有空間。
+   - 社群（16% / 1.6%）：預算幾乎都換到 403 → 減少預算，但 URL 仍留在 golden set 裡量。
+   - 影音：可能和 youtube 限流有關，先查原因。
+
+**限制**
+- 這屬於 crawl selection 的範圍（hedger9487 已在做 domain tiering T0/T1/T2），按類別調整只是更粗的版本。我們的角色是提供這張表當證據。
+- 只能在 domain / 類別層級調整：每個 batch 約 98% 的 URL 是新的（hedger9487 的分析），無法鎖定特定 URL。
+- crawler 一旦依 golden 分佈調整，coverage 量的就是「對熱門 query 的覆蓋」，不再代表 crawler 的整體品質 → 解讀與報告時要寫明。
 
 ---
 
